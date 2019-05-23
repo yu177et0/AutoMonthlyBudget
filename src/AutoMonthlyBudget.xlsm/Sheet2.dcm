@@ -1,0 +1,304 @@
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "Sheet2"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+'--------------------------------------------------
+' Header
+'--------------------------------------------------
+Const MSG_INF_SUCCESS As String = "Success!"
+Const MSG_ERR_INVALIDCARD As String = "Invalid credit dard"
+Const MSG_ERR_INVALIDPATH As String = "Invalid file path"
+Const MSG_ERR_INVALIDFILEFORMAT As String = "Invalid file format"
+Const MSG_ERR_CARDCOLUMN = "Card column mismatches or first row is header in specified CSV file"
+
+Private Type CvsColumn
+    TopRowSkip As Boolean
+    Date As Long
+    Desc As Long
+    Amount As Long
+End Type
+
+Dim Card As CvsColumn
+Dim App As New Excel.Application
+Dim Csv As Excel.Workbook
+Const ROW_EXP = 17
+Const COL_EXP_DATE As Long = 7
+Const COL_EXP_AMOUNT As Long = 8
+Const COL_EXP_DESC As Long = 9
+Const COL_EXP_WHO As Long = 10
+Const COL_EXP_CATEGORY As Long = 11
+
+
+'--------------------------------------------------
+' Body
+'--------------------------------------------------
+Sub Initialize()
+    App.Visible = False
+    
+    Dim i As Integer: i = 2
+    Dim index As Integer: index = 0
+    Do While Sheets("Card").Cells(i, 1).Text <> ""
+        If Sheets("Card").Cells(i, 1).Value = CardCmb.Text Then
+            index = i
+            Exit Do
+        End If
+        i = i + 1
+    Loop
+    
+    If index = 0 Then
+        
+        
+    End If
+    
+    Card.Date = Sheets("Card").Cells(index, 2)
+    Card.Amount = Sheets("Card").Cells(index, 3)
+    Card.Desc = Sheets("Card").Cells(index, 4)
+    Card.TopRowSkip = Sheets("Card").Cells(index, 5)
+    
+End Sub
+
+Sub Finalize()
+    Csv.Close SaveChanges:=False
+    App.Quit
+    Set App = Nothing
+End Sub
+
+Private Sub BrowseBtn_Click()
+    Dim csvFilePath As String
+    csvFilePath = Application.GetOpenFilename("CSV file,*.csv?")
+    If Target = "False" Then Exit Sub
+    
+    CsvFilePathTxt.Value = csvFilePath
+    
+End Sub
+
+Private Sub RunBtn_Click()
+
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Init
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    Call Initialize
+    
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Open CSV file
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    If CheckFilePath(CsvFilePathTxt.Value) = False Then
+        Exit Sub
+    End If
+    
+    Set Csv = App.Workbooks.Add(CsvFilePathTxt.Value)
+    
+    
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Validate CSV file
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    If ValidateCsv() = False Then
+        MsgBox MSG_ERR_CARDCOLUMN, vbOKOnly
+        GoTo ErrorHandler
+    End If
+
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    'Main Loop
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    Dim wsCsv As Worksheet
+    Set wsCsv = Csv.Sheets(1)
+    Dim i As Long
+    If Card.TopRowSkip Then
+        i = 2
+    Else
+        i = 1
+    End If
+    
+    Do While wsCsv.Cells(i, Card.Date).Value <> ""
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        'Payment?
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        Dim Amount As Double: Amount = wsCsv.Cells(i, Card.Amount).Value
+        Dim payment As String: payment = wsCsv.Cells(i, Card.Desc).Value
+        If Amount > 0 And (InStr(payment, "PAYMENT") Or InStr(payment, "Payment")) Then GoTo Continue
+        
+        Amount = Amount * (-1)
+    
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        ' Create new sheet
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        Dim dt As Date: dt = wsCsv.Cells(i, Card.Date).Value
+        Dim monthYear As String: monthYear = DateToMonthYear(dt)
+        If SheetExists(monthYear) = False Then
+            Call CreateSheet(monthYear)
+            Sheets(monthYear).Range("A1").Value = monthYear & " Monthly Budget"
+        End If
+        
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        ' Check overlapping item
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        Dim wsBdg As Worksheet
+        Set wsBdg = Sheets(monthYear)
+        
+        If IsOverlap(wsBdg, wsCsv, Card, i) = True Then GoTo Continue
+        
+        
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        ' Populate item
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        popRow = wsBdg.Cells(Rows.Count, COL_EXP_AMOUNT).End(xlUp).Row + 1
+        
+        wsBdg.Cells(popRow, COL_EXP_DATE).Value = dt
+        wsBdg.Cells(popRow, COL_EXP_AMOUNT).Value = Amount
+        wsBdg.Cells(popRow, COL_EXP_DESC).Value = wsCsv.Cells(i, Card.Desc).Value
+        wsBdg.Cells(popRow, COL_EXP_WHO).Value = NameCmb.Text
+        
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        ' Find category
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        Dim wsLut As Worksheet
+        Set wsLut = Sheets("LUT")
+        Dim category As String: category = FindCategory(wsLut, Desc)
+        
+        If category <> "" Then
+            wsBdg.Cells(popRow, COL_EXP_CATEGORY).Value = category
+        End If
+        
+Continue:
+        i = i + 1
+    Loop
+    
+    MsgBox MSG_INF_SUCCESS, vbOKOnly
+    
+ErrorHandler:
+    Call Finalize
+End Sub
+
+
+
+Function CheckFilePath(ByVal Path As String) As Boolean
+    If Path = "" Then
+        MsgBox MSG_ERR_INVALIDPATH, vbOKOnly
+        CheckFilePath = False
+        Exit Function
+    End If
+    
+    If Dir(Path) = "" Then
+        MsgBox MSG_ERR_INVALIDPATH, vbOKOnly
+        CheckFilePath = False
+        Exit Function
+    End If
+    
+    If (Right(Path, 4) <> ".csv") And (Right(Path, 4) <> ".CSV") Then
+        MsgBox MSG_ERR_INVALIDFILEFORMAT, vbOKOnly
+        CheckFilePath = False
+        Exit Function
+    End If
+    
+    CheckFilePath = True
+End Function
+
+Sub CreateSheet(ByVal sheetName As String)
+    Worksheets("Master").Copy After:=Worksheets("Main")
+    ActiveSheet.Name = sheetName
+End Sub
+
+Function monthYear(ByVal year As Long, ByVal month As Long) As String
+    monthYear = Format(month, "mmm") & Str(year)
+End Function
+
+Function DateToMonthYear(ByVal dt As Date) As String
+    DateToMonthYear = Format(dt, "mmm") & Format(dt, "yyyy")
+End Function
+
+Function SheetExists(ByVal sheetName As String) As Boolean
+    Dim ret As Boolean
+    ret = False
+    Dim ws As Worksheet
+    For Each ws In Worksheets
+        If ws.Name = sheetName Then
+            ret = True
+            Exit For
+        End If
+    Next ws
+    
+    SheetExists = ret
+    
+End Function
+
+Private Function IsOverlap(ByVal wsBdg As Worksheet, _
+                    ByVal wsCvs As Worksheet, _
+                    ByRef cvsCol As CvsColumn, _
+                    ByVal csvRow As Long) As Boolean
+    Dim ret As Long: ret = False
+    Dim i As Long: i = ROW_EXP
+    Do While wsBdg.Cells(i, COL_EXP_AMOUNT).Value <> ""
+        If wsBdg.Cells(i, COL_EXP_AMOUNT).Value = wsCvs.Cells(csvRow, cvsCol.Amount).Value * (-1) Then
+            If wsBdg.Cells(i, COL_EXP_DATE).Value = wsCvs.Cells(csvRow, cvsCol.Date).Value Then
+                ret = True
+                Exit Do
+            End If
+        End If
+        i = i + 1
+    Loop
+    
+    IsOverlap = ret
+    
+End Function
+
+Function FindCategory(ByVal ws As Worksheet, ByVal Desc As String) As String
+    Dim ret As String: ret = ""
+    Dim i As Long: i = 2
+    Do While ws.Cells(i, 1).Value <> ""
+        If InStr(Desc, ws.Cells(i, 1).Value) Then
+            ret = ws.Cells(i, 2).Value
+            Exit Do
+        End If
+        
+        i = i + 1
+    Loop
+    
+    FindCategory = ret
+End Function
+
+Public Sub InitCmb()
+    Dim i As Integer: i = 2
+
+    NameCmb.Clear
+    Do While Sheets("List").Cells(i, 2).Value <> ""
+        NameCmb.AddItem (Sheets("List").Cells(i, 2).Value)
+        i = i + 1
+    Loop
+    NameCmb.ListIndex = 0
+    
+    CardCmb.Clear
+    i = 2
+    Do While Sheets("Card").Cells(i, 1).Value <> ""
+        CardCmb.AddItem (Sheets("Card").Cells(i, 1).Value)
+        i = i + 1
+    Loop
+    CardCmb.ListIndex = 0
+    
+End Sub
+
+Private Sub Worksheet_Activate()
+    Call InitCmb
+    CsvFilePathTxt.Value = ""
+End Sub
+
+Function ValidateCsv() As Boolean
+    Dim ret As Boolean: ret = True
+    If VarType(Csv.Sheets(1).Cells(2, Card.Date)) <> vbDate Then
+        ret = False
+    End If
+    
+    If IsNumeric(Csv.Sheets(1).Cells(2, Card.Amount)) = False Then
+        ret = False
+    End If
+    
+    If VarType(Csv.Sheets(1).Cells(2, Card.Desc)) <> vbString Then
+        ret = False
+    End If
+    
+    ValidateCsv = ret
+End Function
